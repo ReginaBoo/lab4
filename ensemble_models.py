@@ -1,13 +1,19 @@
-"""Эксперимент с ансамблем или полносвязной нейронной сетью."""
 from __future__ import annotations
 
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    GradientBoostingClassifier,
+    RandomForestClassifier,
+    StackingClassifier,
+)
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -16,9 +22,10 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
+from sklearn.preprocessing import  OrdinalEncoder
 
 from grader_contracts.ensembles import EnsembleInput, EnsembleResult
+
 
 CATEGORICAL_COLS = [
     "Account_Balance",
@@ -48,56 +55,93 @@ NUMERIC_COLS = [
 
 
 def _add_domain_features(X: Any) -> pd.DataFrame:
-    """Формирует доменные признаки без использования целевой переменной."""
+    """
+    Добавляет признаки, не используя целевую переменную.
+
+    Признаки:
+    - сумма кредита на один месяц;
+    - отношение возраста к длительности кредита;
+    - сумма кредита относительно возраста.
+    """
     if isinstance(X, pd.DataFrame):
         df = X.copy()
     else:
         arr = np.asarray(X)
-        cols = [f"f_{i}" for i in range(arr.shape[1])]
-        df = pd.DataFrame(arr, columns=cols)
+        columns = [f"f_{i}" for i in range(arr.shape[1])]
+        df = pd.DataFrame(arr, columns=columns)
 
-    # Приводим известные столбцы к числовому типу, если они присутствуют
     for col in df.columns:
         if col in CATEGORICAL_COLS or col in NUMERIC_COLS:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    if "Credit_Amount" in df.columns and "Duration_of_Credit_monthly" in df.columns:
+    if {
+        "Credit_Amount",
+        "Duration_of_Credit_monthly",
+    }.issubset(df.columns):
         duration = df["Duration_of_Credit_monthly"].replace(0, np.nan)
-        df["credit_per_month"] = (df["Credit_Amount"] / duration).fillna(0.0)
+        df["credit_per_month"] = (
+            df["Credit_Amount"] / duration
+        ).replace([np.inf, -np.inf], np.nan)
 
-    if "Age_years" in df.columns and "Duration_of_Credit_monthly" in df.columns:
+    if {
+        "Age_years",
+        "Duration_of_Credit_monthly",
+    }.issubset(df.columns):
         duration = df["Duration_of_Credit_monthly"].replace(0, np.nan)
-        df["age_to_duration"] = (df["Age_years"] / duration).fillna(0.0)
+        df["age_to_credit_duration"] = (
+            df["Age_years"] / duration
+        ).replace([np.inf, -np.inf], np.nan)
 
-    if "Credit_Amount" in df.columns and "Age_years" in df.columns:
+    if {
+        "Credit_Amount",
+        "Age_years",
+    }.issubset(df.columns):
         age = df["Age_years"].replace(0, np.nan)
-        df["credit_to_age"] = (df["Credit_Amount"] / age).fillna(0.0)
+        df["credit_to_age"] = (
+            df["Credit_Amount"] / age
+        ).replace([np.inf, -np.inf], np.nan)
 
     return df
 
 
 def _build_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
-    """Строит ColumnTransformer под доступные столбцы датафрейма."""
-    present_cat = [c for c in CATEGORICAL_COLS if c in df.columns]
-    present_num = [
-        c
-        for c in df.columns
-        if c not in present_cat and pd.api.types.is_numeric_dtype(df[c])
+    """Создаёт предобработку для числовых и категориальных признаков."""
+
+    categorical = [
+        col for col in CATEGORICAL_COLS
+        if col in df.columns
+    ]
+
+    numeric = [
+        col
+        for col in df.columns
+        if col not in categorical
+        and pd.api.types.is_numeric_dtype(df[col])
     ]
 
     transformers = []
-    if present_num:
-        num_pipe = Pipeline(
+
+    if numeric:
+        numeric_pipeline = Pipeline(
             steps=[
-                ("imputer", SimpleImputer(strategy="median")),
+                (
+                    "imputer",
+                    SimpleImputer(strategy="median"),
+                ),
             ]
         )
-        transformers.append(("num", num_pipe, present_num))
 
-    if present_cat:
-        cat_pipe = Pipeline(
+        transformers.append(
+            ("numeric", numeric_pipeline, numeric)
+        )
+
+    if categorical:
+        categorical_pipeline = Pipeline(
             steps=[
-                ("imputer", SimpleImputer(strategy="most_frequent")),
+                (
+                    "imputer",
+                    SimpleImputer(strategy="most_frequent"),
+                ),
                 (
                     "encoder",
                     OrdinalEncoder(
@@ -107,30 +151,23 @@ def _build_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
                 ),
             ]
         )
-        transformers.append(("cat", cat_pipe, present_cat))
 
-    if not transformers:
-        fallback_pipe = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="median")),
-                ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-            ]
-        )
-        return ColumnTransformer(
-            transformers=[("fallback", fallback_pipe, list(df.columns))],
-            remainder="drop",
+        transformers.append(
+            ("categorical", categorical_pipeline, categorical)
         )
 
-    return ColumnTransformer(transformers=transformers, remainder="drop")
-
+    return ColumnTransformer(
+        transformers=transformers,
+        remainder="drop",
+    )
 
 def run_ensemble_experiment(data: EnsembleInput) -> EnsembleResult:
-    """Обучите выбранную модель и верните вероятности, метки и метрики на test.
-
-    Разрешены Random Forest, Extra Trees, AdaBoost, Gradient Boosting,
-    HistGradientBoosting, Voting/Stacking или полносвязная MLP. Не используйте
-    test_target при обучении модели или подборе её параметров.
     """
+    Обучает ансамбль только на train-части.
+
+    test_target используется исключительно для финальной оценки.
+    """
+
     seed = int(data.random_seed)
 
     train_df = _add_domain_features(data.train_features)
@@ -139,43 +176,108 @@ def run_ensemble_experiment(data: EnsembleInput) -> EnsembleResult:
     y_train = np.asarray(data.train_target).ravel()
     y_test = np.asarray(data.test_target).ravel()
 
+    # Важно: preprocessing строится по train-признакам.
     preprocessor = _build_preprocessor(train_df)
 
-    model = HistGradientBoostingClassifier(
-        learning_rate=0.05,
-        max_iter=200,
-        max_leaf_nodes=15,
-        min_samples_leaf=20,
-        l2_regularization=1.0,
-        random_state=seed,
+    base_models = [
+        (
+            "rf",
+            RandomForestClassifier(
+                n_estimators=300,
+                max_depth=8,
+                min_samples_leaf=4,
+                max_features="sqrt",
+                class_weight="balanced",
+                random_state=seed,
+                n_jobs=-1,
+            ),
+        ),
+        (
+            "extra_trees",
+            ExtraTreesClassifier(
+                n_estimators=300,
+                max_depth=10,
+                min_samples_leaf=3,
+                max_features="sqrt",
+                class_weight="balanced",
+                random_state=seed,
+                n_jobs=-1,
+            ),
+        ),
+        (
+            "gradient_boosting",
+            GradientBoostingClassifier(
+                n_estimators=150,
+                learning_rate=0.04,
+                max_depth=3,
+                min_samples_leaf=5,
+                subsample=0.85,
+                random_state=seed,
+            ),
+        ),
+    ]
+
+    model = StackingClassifier(
+        estimators=base_models,
+        final_estimator=LogisticRegression(
+            C=0.5,
+            max_iter=1000,
+        ),
+        stack_method="predict_proba",
+        cv=5,
+        n_jobs=-1,
     )
 
     clf = Pipeline(
         steps=[
-            ("prep", preprocessor),
+            ("preprocessor", preprocessor),
             ("model", model),
         ]
     )
 
     clf.fit(train_df, y_train)
 
-    proba_all = clf.predict_proba(test_df)
-    probabilities = proba_all[:, 1]
+    probabilities = clf.predict_proba(test_df)[:, 1]
     predictions = clf.predict(test_df)
 
-    roc_auc = float(roc_auc_score(y_test, probabilities))
-    accuracy = float(accuracy_score(y_test, predictions))
-    precision = float(precision_score(y_test, predictions, zero_division=0))
-    recall = float(recall_score(y_test, predictions, zero_division=0))
-    f1 = float(f1_score(y_test, predictions, zero_division=0))
+    roc_auc = roc_auc_score(
+        y_test,
+        probabilities,
+    )
+
+    accuracy = accuracy_score(
+        y_test,
+        predictions,
+    )
+
+    precision = precision_score(
+        y_test,
+        predictions,
+        zero_division=0,
+    )
+
+    recall = recall_score(
+        y_test,
+        predictions,
+        zero_division=0,
+    )
+
+    f1 = f1_score(
+        y_test,
+        predictions,
+        zero_division=0,
+    )
 
     return EnsembleResult(
-        model_name="HistGradientBoosting + DomainFeatures",
+        model_name=(
+            "Stacking: RandomForest + ExtraTrees + "
+            "GradientBoosting -> LogisticRegression"
+        ),
         probabilities=probabilities,
         predictions=predictions,
-        roc_auc=roc_auc,
-        accuracy=accuracy,
-        precision=precision,
-        recall=recall,
-        f1=f1,
+        roc_auc=float(roc_auc),
+        accuracy=float(accuracy),
+        precision=float(precision),
+        recall=float(recall),
+        f1=float(f1),
     )

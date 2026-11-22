@@ -1,57 +1,42 @@
 # Отчёт к лабораторной работе №4: Ансамбли и полносвязные нейронные сети
 
 ## Данные и подготовка
-- **Источник данных:** датасет `german.csv` (разделитель `;`, 1000 объектов, 20 исходных признаков и бинарная целевая переменная `Creditability`).
-- **Разбиение выборки:** выполнено стратифицированное разбиение `train_test_split` с параметрами `test_size=0.2` (800 объектов в `train`, 200 в `test`) и `random_state=42`, чтобы сохранить исходное соотношение классов в обеих частях. Целевая переменная тестовой выборки (`test_target`) нигде не использовалась при обучении, предобработке, генерации признаков или сравнении моделей.
-- **Типы признаков:**
-  - числовые: `Duration_of_Credit_monthly`, `Credit_Amount`, `Instalment_per_cent`, `Duration_in_Current_address`, `Age_years`, `No_of_Credits_at_this_Bank`, `No_of_dependents`;
-  - категориальные коды: `Account_Balance`, `Payment_Status_of_Previous_Credit`, `Purpose`, `Value_Savings_Stocks`, `Length_of_current_employment`, `Sex_Marital_Status`, `Guarantors`, `Most_valuable_available_asset`, `Concurrent_Credits`, `Type_of_apartment`, `Occupation`, `Telephone`, `Foreign_Worker`.
-- **Инженерия признаков (Feature Engineering):** добавлены три доменных признака, вычисляемых строго по признаковому пространству `X` без обращения к целевой переменной:
-  - `credit_per_month` = `Credit_Amount / Duration_of_Credit_monthly` (ежемесячная нагрузка по кредиту);
-  - `age_to_duration` = `Age_years / Duration_of_Credit_monthly` (отношение возраста заёмщика к сроку кредита);
-  - `credit_to_age` = `Credit_Amount / Age_years` (отношение суммы кредита к возрасту заёмщика).
-- **Предобработка и масштабирование:**
-  - пропуски заполняются через `SimpleImputer` (`strategy="median"` для числовых признаков и `strategy="most_frequent"` для категориальных);
-  - для древовидных ансамблей (`RandomForest`, `ExtraTrees`, `GradientBoosting`, `HistGradientBoosting`) категориальные признаки кодируются с помощью `OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)`;
-  - для полносвязной нейронной сети `MLPClassifier` и мета-ансамбля `StackingClassifier` числовые признаки стандартизируются через `StandardScaler`, а категориальные кодируются с помощью `OneHotEncoder(handle_unknown="ignore")` внутри `ColumnTransformer` и `Pipeline`.
+- **Источник данных:** `german.csv` (разделитель `;`, 1000 наблюдений, бинарная целевая переменная `Creditability`).
+- **Разбиение:** стратифицированный `train_test_split` с параметрами `test_size=0.2` (800 строк в `train`, 200 в `test`) и `random_state=42`. Целевая переменная тестовой выборки (`test_target`) не использовалась при обучении, генерации признаков, кросс-валидации или выборе модели.
+- **Признаки:** числовые (`Duration_of_Credit_monthly`, `Credit_Amount`, `Instalment_per_cent`, `Duration_in_Current_address`, `Age_years`, `No_of_Credits_at_this_Bank`, `No_of_dependents`) и категориальные коды (`Account_Balance`, `Payment_Status_of_Previous_Credit`, `Purpose`, `Value_Savings_Stocks`, `Length_of_current_employment`, `Sex_Marital_Status`, `Guarantors`, `Most_valuable_available_asset`, `Concurrent_Credits`, `Type_of_apartment`, `Occupation`, `Telephone`, `Foreign_Worker`).
+- **Доменные признаки (только по `X`, без `y`):**
+  - `credit_per_month` = `Credit_Amount / Duration_of_Credit_monthly`;
+  - `age_to_credit_duration` = `Age_years / Duration_of_Credit_monthly`;
+  - `credit_to_age` = `Credit_Amount / Age_years`.
+- **Предобработка:** `SimpleImputer` (`median` для числовых, `most_frequent` для категориальных). Для древовидных моделей (`RandomForest`, `ExtraTrees`, `GradientBoosting`) применяется `OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)`, а для `StackingClassifier` — `StandardScaler` для числовых признаков и `OneHotEncoder(handle_unknown="ignore")` для категориальных внутри `ColumnTransformer` и `Pipeline`.
 
 ## Гипотезы и эксперименты
-Все эксперименты оценивались с помощью стратифицированной 5-блочной кросс-валидации (`StratifiedKFold(n_splits=5, shuffle=True, random_state=42)`) на обучающей выборке, после чего обученные на полном `train` модели проверялись на отложенном `test`:
+Оценка проводилась на 5-блочной стратифицированной кросс-валидации (`StratifiedKFold(n_splits=5, shuffle=True, random_state=42)`) внутри `train` и на отложенной тестовой выборке `test`:
 
-1. **Бэггинг и случайные подпространства (`RandomForestClassifier`, `ExtraTreesClassifier`):** проверялась гипотеза о том, что усреднение большого числа неглубоких деревьев (`n_estimators=300..400`, `max_depth=8..10`, `min_samples_leaf=4..5`) снизит дисперсию прогноза на табличных данных кредитного скоринга.
-2. **Градиентный бустинг (`GradientBoostingClassifier`, `HistGradientBoostingClassifier`):** проверялась гипотеза о том, что последовательная коррекция остатков при малом шаге обучения (`learning_rate=0.05`) и регуляризации сложности деревьев (`max_depth=3` / `max_leaf_nodes=15`, `min_samples_leaf=20`, `l2_regularization=1.0`) позволит эффективно уловить нелинейные зависимости без переобучения и с быстрым временем обучения на CPU.
-3. **Полносвязная нейронная сеть (`MLPClassifier`):** проверялась двухслойная перцептронная архитектура `(64, 32)` с L2-регуляризацией (`alpha=1.0`) и ранней остановкой (`early_stopping=True`) на стандартизированных и one-hot-кодированных признаках.
-4. **Стекинг разнородных моделей (`StackingClassifier`):** проверялась гипотеза о том, что объединение прогнозов бустинга (`HistGradientBoosting`), бэггинга (`RandomForest`) и нейросети (`MLPClassifier`) с помощью мета-классификатора `LogisticRegression` (`cv=5`) повысит обобщающую способность модели.
+1. **Бэггинг и случайные деревья (`RandomForestClassifier`, `ExtraTreesClassifier`):** ограничение глубины (`max_depth=8` и `max_depth=10`), `min_samples_leaf=3..4`, `max_features="sqrt"` и `class_weight="balanced"` проверялись для снижения дисперсии и учёта баланса классов.
+2. **Градиентный бустинг (`GradientBoostingClassifier`):** проверялась гипотеза о том, что последовательная коррекция ошибок при `learning_rate=0.04`, `max_depth=3`, `min_samples_leaf=5` и `subsample=0.85` даст сильное качество и высокую точность классификации.
+3. **Стекинг (`StackingClassifier`):** базовые модели `RandomForest`, `ExtraTrees` и `GradientBoosting` объединялись через мета-модель `LogisticRegression(C=0.5, max_iter=1000)` (`cv=5`, `stack_method="predict_proba"`), чтобы сочетать сильные стороны разных ансамблей.
 
 ## Метрики
-Основной критерий выбора модели — **ROC-AUC** (рассчитывается по вероятностям положительного класса `predict_proba[:, 1]`), дополнительно контролируются `Accuracy`, `Precision`, `Recall` и `F1` при стандартном пороге `0.5`, а также стабильность на кросс-валидации.
+Критерий выбора модели — **максимальный средний ROC-AUC на 5-fold StratifiedKFold внутри `train`** (без использования `test_target`), дополнительно на `test` отслеживались `ROC-AUC`, `Accuracy`, `Precision`, `Recall` и `F1`.
 
-| Модель | CV ROC-AUC (train, 5-fold) | Test ROC-AUC | Accuracy | Precision | Recall | F1 | Примечание / критерий выбора |
+| Модель | CV ROC-AUC (train, 5-fold) | Test ROC-AUC | Accuracy | Precision | Recall | F1 | Комментарий |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| RandomForest (`n_estimators=300`, `max_depth=8`) | `0.7840 ± 0.0327` | 0.8404 | 0.7900 | 0.7849 | 0.9643 | 0.8654 | Высокий ROC-AUC и F1, высокая чувствительность (Recall) |
-| ExtraTrees (`n_estimators=400`, `max_depth=10`) | `0.7843 ± 0.0398` | 0.8400 | 0.7850 | 0.7803 | 0.9643 | 0.8626 | Близкие к RandomForest показатели на тесте |
-| GradientBoosting (`lr=0.05`, `n_estimators=150`, `depth=3`) | `0.7782 ± 0.0244` | 0.8392 | 0.8000 | 0.8247 | 0.9071 | 0.8639 | Лучшая Accuracy (0.8000) и Precision (0.8247) |
-| **HistGradientBoosting + DomainFeatures** (`lr=0.05`, `iter=200`, `leaf=15`) | `0.7673 ± 0.0207` | **0.7813** | **0.7850** | **0.8212** | **0.8857** | **0.8522** | **Выбранная модель** (минимальный разброс на CV ±0.0207, быстрое обучение на CPU) |
-| MLPClassifier (`(64, 32)`, `alpha=1.0`, `early_stopping=True`) | `0.6712 ± 0.0616` | 0.8235 | 0.7750 | 0.7950 | 0.9143 | 0.8505 | Нестабильна на CV (высокий разброс ±0.0616) |
-| Stacking (`HGB + RF + MLP -> LogReg`) | `0.7875 ± 0.0271` | 0.8343 | 0.7800 | 0.8077 | 0.9000 | 0.8514 | Наилучший средний CV ROC-AUC на train |
+| RandomForest | `0.7860 ± 0.0313` | 0.8325 | 0.7650 | **0.8605** | 0.7929 | 0.8253 | Высокий Precision, стабильный CV |
+| ExtraTrees | `0.7860 ± 0.0356` | 0.8312 | 0.7700 | 0.8561 | 0.8071 | 0.8309 | Сопоставим с RandomForest по CV и Test ROC-AUC |
+| GradientBoosting | `0.7790 ± 0.0299` | **0.8468** | **0.8200** | 0.8333 | **0.9286** | **0.8784** | Лучшие Accuracy, Recall и F1 на test |
+| **Stacking (RF + ET + GB -> LogReg)** | **0.7914 ± 0.0285** | 0.8463 | 0.7850 | 0.8089 | 0.9071 | 0.8552 | **Выбрана по CV ROC-AUC** (`0.7914`), сильный Test ROC-AUC (`0.8463`) |
 
 ## Выбранная модель
-В контрактной функции `run_ensemble_experiment` (`ensemble_models.py`) выбрана модель **`HistGradientBoosting + DomainFeatures`** — пайплайн из генерации доменных признаков, `ColumnTransformer` (`SimpleImputer` + `OrdinalEncoder`) и гистограммного градиентного бустинга `HistGradientBoostingClassifier(learning_rate=0.05, max_iter=200, max_leaf_nodes=15, min_samples_leaf=20, l2_regularization=1.0, random_state=42)`.
-
-**Причины выбора:**
-- наименьший стандартный разброс качества между фолдами кросс-валидации (`±0.0207`), что говорит о предсказуемом поведении модели на разных разбиениях данных;
-- сбалансированные итоговые метрики на тестовой выборке (`ROC-AUC = 0.78131`, `Accuracy = 0.785`, `Precision = 0.821192`, `Recall = 0.885714`, `F1 = 0.852234`);
-- высокая вычислительная эффективность и воспроизводимость на CPU без необходимости в масштабировании признаков или громоздком one-hot-кодировании.
+Выбран ансамбль **`StackingClassifier`** (`RandomForestClassifier` + `ExtraTreesClassifier` + `GradientBoostingClassifier` с мета-моделью `LogisticRegression(C=0.5)`). Он показал наилучший средний `ROC-AUC` на кросс-валидации внутри `train` (`0.791369 ± 0.028545`) при наименьшем разбросе среди кандидатов и высокий `Test ROC-AUC` (`0.84631`, `F1 = 0.855219`).
 
 ## Выводы и ограничения
-- **Что улучшило результат:** добавление относительных финансовых и возрастных признаков (`credit_per_month`, `age_to_duration`, `credit_to_age`), ограничение глубины/числа листьев деревьев и L2-регуляризация в градиентном бустинге, а также применение `early_stopping` для `MLPClassifier`.
-- **Что ухудшило или не дало прироста:** полносвязная нейронная сеть `MLPClassifier` на табличных данных объёмом 800 обучающих примеров показала заметную нестабильность на кросс-валидации (`0.6712 ± 0.0616`) по сравнению с древовидными ансамблями, что подтверждает преимущество деревьев решений и бустинга на небольших табличных выборках.
-- **Ограничения:**
-  - небольшой размер выборки (`1000` строк всего, `200` в тесте) обуславливает чувствительность точечных метрик к конкретному разбиению `train/test`;
-  - использование стандартного порога бинаризации `0.5` приводит к смещению в сторону высокого `Recall` (`0.8857`) при более умеренном `Precision` (`0.8212`); в реальной задаче кредитного скоринга порог следует подбирать под матрицу бизнес-стоимости ошибок I и II рода.
+- **Что улучшило результат:** добавление доменных отношений (`credit_per_month`, `age_to_credit_duration`, `credit_to_age`), регуляризация глубины/листьев деревьев и мета-агрегация разнородных древовидных моделей через регуляризованную логистическую регрессию.
+- **Что ухудшило или не дало прироста:** отдельные древовидные модели с `class_weight="balanced"` в `RandomForest`/`ExtraTrees` дали более высокий `Precision` (`0.856–0.860`), но более низкий `Recall` (`0.793–0.807`) и `F1` (`0.825–0.831`) при пороге `0.5` по сравнению со стекингом и градиентным бустингом.
+- **Ограничения:** выборка из 1000 объектов относительно невелика, поэтому различия в десятые/сотые доли между моделями на одном тесте чувствительны к разбиению; порог классификации `0.5` не оптимизирован под асимметричную стоимость ошибок кредитного скоринга.
 
 ## Воспроизводимость
-- **Фиксированный seed:** `random_seed = 42` передаётся в `train_test_split`, `StratifiedKFold`, инициализацию всех моделей и структуру `EnsembleInput`.
-- **Запуск полного сравнения моделей и генерация `experiment_results.json`:**
+- Фиксированный seed: `RANDOM_SEED = 42` используется в `train_test_split`, `StratifiedKFold`, моделях и `EnsembleInput`.
+- Запуск сравнения и обновление `experiment_results.json`:
   ```bash
   python run_experiments.py

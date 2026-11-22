@@ -1,4 +1,5 @@
-"""Скрипт воспроизводимого сравнения моделей на german.csv."""
+"""Воспроизводимое сравнение ансамблей на german.csv."""
+
 from __future__ import annotations
 
 import json
@@ -6,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import (
     ExtraTreesClassifier,
     GradientBoostingClassifier,
-    HistGradientBoostingClassifier,
     RandomForestClassifier,
     StackingClassifier,
 )
@@ -23,52 +24,62 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
-from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import (
+    StratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.preprocessing import (
+    OneHotEncoder,
+    OrdinalEncoder,
+    StandardScaler,
+)
 
 from ensemble_models import (
     CATEGORICAL_COLS,
-    NUMERIC_COLS,
     _add_domain_features,
     run_ensemble_experiment,
 )
 from grader_contracts.ensembles import EnsembleInput
 
+
 RANDOM_SEED = 42
+TEST_SIZE = 0.2
 
 
-def main() -> None:
-    df = pd.read_csv("german.csv", sep=";")
-    target_col = "Creditability"
-    X = df.drop(columns=[target_col])
-    y = df[target_col].astype(int)
+def build_tree_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
+    categorical = [
+        col for col in CATEGORICAL_COLS
+        if col in df.columns
+    ]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        stratify=y,
-        random_state=RANDOM_SEED,
-    )
+    numeric = [
+        col
+        for col in df.columns
+        if col not in categorical
+        and pd.api.types.is_numeric_dtype(df[col])
+    ]
 
-    train_fe = _add_domain_features(X_train)
-    test_fe = _add_domain_features(X_test)
-
-    cat_cols = [c for c in CATEGORICAL_COLS if c in train_fe.columns]
-    num_cols = [c for c in train_fe.columns if c not in cat_cols]
-
-    tree_prep = ColumnTransformer(
+    return ColumnTransformer(
         transformers=[
-            ("num", SimpleImputer(strategy="median"), num_cols),
             (
-                "cat",
+                "numeric",
+                SimpleImputer(strategy="median"),
+                numeric,
+            ),
+            (
+                "categorical",
                 Pipeline(
-                    [
-                        ("imp", SimpleImputer(strategy="most_frequent")),
+                    steps=[
                         (
-                            "enc",
+                            "imputer",
+                            SimpleImputer(
+                                strategy="most_frequent"
+                            ),
+                        ),
+                        (
+                            "encoder",
                             OrdinalEncoder(
                                 handle_unknown="use_encoded_value",
                                 unknown_value=-1,
@@ -76,30 +87,60 @@ def main() -> None:
                         ),
                     ]
                 ),
-                cat_cols,
+                categorical,
             ),
         ]
     )
 
-    linear_mlp_prep = ColumnTransformer(
+
+def build_linear_preprocessor(
+    df: pd.DataFrame,
+) -> ColumnTransformer:
+
+    categorical = [
+        col for col in CATEGORICAL_COLS
+        if col in df.columns
+    ]
+
+    numeric = [
+        col
+        for col in df.columns
+        if col not in categorical
+        and pd.api.types.is_numeric_dtype(df[col])
+    ]
+
+    return ColumnTransformer(
         transformers=[
             (
-                "num",
+                "numeric",
                 Pipeline(
-                    [
-                        ("imp", SimpleImputer(strategy="median")),
-                        ("scaler", StandardScaler()),
+                    steps=[
+                        (
+                            "imputer",
+                            SimpleImputer(
+                                strategy="median"
+                            ),
+                        ),
+                        (
+                            "scaler",
+                            StandardScaler(),
+                        ),
                     ]
                 ),
-                num_cols,
+                numeric,
             ),
             (
-                "cat",
+                "categorical",
                 Pipeline(
-                    [
-                        ("imp", SimpleImputer(strategy="most_frequent")),
+                    steps=[
                         (
-                            "ohe",
+                            "imputer",
+                            SimpleImputer(
+                                strategy="most_frequent"
+                            ),
+                        ),
+                        (
+                            "encoder",
                             OneHotEncoder(
                                 handle_unknown="ignore",
                                 sparse_output=False,
@@ -107,155 +148,341 @@ def main() -> None:
                         ),
                     ]
                 ),
-                cat_cols,
+                categorical,
             ),
         ]
     )
 
-    candidates = {
-        "RandomForest (n_estimators=300, max_depth=8)": Pipeline(
-            [
-                ("prep", tree_prep),
-                (
-                    "clf",
-                    RandomForestClassifier(
-                        n_estimators=300,
-                        max_depth=8,
-                        min_samples_leaf=5,
-                        random_state=RANDOM_SEED,
-                        n_jobs=-1,
-                    ),
+
+def build_candidates(
+    train_df: pd.DataFrame,
+) -> dict[str, Pipeline]:
+
+    tree_preprocessor = build_tree_preprocessor(train_df)
+    linear_preprocessor = build_linear_preprocessor(train_df)
+
+    candidates = {}
+
+    candidates[
+        "RandomForest"
+    ] = Pipeline(
+        steps=[
+            ("prep", tree_preprocessor),
+            (
+                "model",
+                RandomForestClassifier(
+                    n_estimators=400,
+                    max_depth=8,
+                    min_samples_leaf=4,
+                    max_features="sqrt",
+                    class_weight="balanced",
+                    random_state=RANDOM_SEED,
+                    n_jobs=-1,
                 ),
-            ]
-        ),
-        "ExtraTrees (n_estimators=400, max_depth=10)": Pipeline(
-            [
-                ("prep", tree_prep),
-                (
-                    "clf",
-                    ExtraTreesClassifier(
-                        n_estimators=400,
-                        max_depth=10,
-                        min_samples_leaf=4,
-                        random_state=RANDOM_SEED,
-                        n_jobs=-1,
-                    ),
+            ),
+        ]
+    )
+
+    candidates[
+        "ExtraTrees"
+    ] = Pipeline(
+        steps=[
+            ("prep", tree_preprocessor),
+            (
+                "model",
+                ExtraTreesClassifier(
+                    n_estimators=400,
+                    max_depth=10,
+                    min_samples_leaf=3,
+                    max_features="sqrt",
+                    class_weight="balanced",
+                    random_state=RANDOM_SEED,
+                    n_jobs=-1,
                 ),
-            ]
-        ),
-        "GradientBoosting (lr=0.05, n_estimators=150, depth=3)": Pipeline(
-            [
-                ("prep", tree_prep),
-                (
-                    "clf",
-                    GradientBoostingClassifier(
-                        learning_rate=0.05,
-                        n_estimators=150,
-                        max_depth=3,
-                        subsample=0.8,
-                        random_state=RANDOM_SEED,
-                    ),
+            ),
+        ]
+    )
+
+    candidates[
+        "GradientBoosting"
+    ] = Pipeline(
+        steps=[
+            ("prep", tree_preprocessor),
+            (
+                "model",
+                GradientBoostingClassifier(
+                    n_estimators=150,
+                    learning_rate=0.04,
+                    max_depth=3,
+                    min_samples_leaf=5,
+                    subsample=0.85,
+                    random_state=RANDOM_SEED,
                 ),
-            ]
-        ),
-        "HistGradientBoosting (lr=0.05, iter=200, leaf=15)": Pipeline(
-            [
-                ("prep", tree_prep),
-                (
-                    "clf",
-                    HistGradientBoostingClassifier(
-                        learning_rate=0.05,
-                        max_iter=200,
-                        max_leaf_nodes=15,
-                        min_samples_leaf=20,
-                        l2_regularization=1.0,
-                        random_state=RANDOM_SEED,
-                    ),
-                ),
-            ]
-        ),
-        "MLPClassifier (64, 32, alpha=1.0, early_stopping=True)": Pipeline(
-            [
-                ("prep", linear_mlp_prep),
-                (
-                    "clf",
-                    MLPClassifier(
-                        hidden_layer_sizes=(64, 32),
-                        alpha=1.0,
-                        max_iter=500,
-                        early_stopping=True,
-                        random_state=RANDOM_SEED,
-                    ),
-                ),
-            ]
-        ),
-        "Stacking (HGB + RF + MLP -> LogReg)": Pipeline(
-            [
-                ("prep", linear_mlp_prep),
-                (
-                    "clf",
-                    StackingClassifier(
-                        estimators=[
-                            (
-                                "hgb",
-                                HistGradientBoostingClassifier(
-                                    learning_rate=0.05,
-                                    max_iter=150,
-                                    max_leaf_nodes=15,
-                                    min_samples_leaf=20,
-                                    l2_regularization=1.0,
-                                    random_state=RANDOM_SEED,
-                                ),
+            ),
+        ]
+    )
+
+    candidates[
+        "Stacking"
+    ] = Pipeline(
+        steps=[
+            ("prep", linear_preprocessor),
+            (
+                "model",
+                StackingClassifier(
+                    estimators=[
+                        (
+                            "rf",
+                            RandomForestClassifier(
+                                n_estimators=250,
+                                max_depth=8,
+                                min_samples_leaf=4,
+                                max_features="sqrt",
+                                class_weight="balanced",
+                                random_state=RANDOM_SEED,
+                                n_jobs=-1,
                             ),
-                            (
-                                "rf",
-                                RandomForestClassifier(
-                                    n_estimators=250,
-                                    max_depth=7,
-                                    min_samples_leaf=5,
-                                    random_state=RANDOM_SEED,
-                                ),
+                        ),
+                        (
+                            "extra_trees",
+                            ExtraTreesClassifier(
+                                n_estimators=250,
+                                max_depth=10,
+                                min_samples_leaf=3,
+                                max_features="sqrt",
+                                class_weight="balanced",
+                                random_state=RANDOM_SEED,
+                                n_jobs=-1,
                             ),
-                            (
-                                "mlp",
-                                MLPClassifier(
-                                    hidden_layer_sizes=(64, 32),
-                                    alpha=1.0,
-                                    max_iter=400,
-                                    early_stopping=True,
-                                    random_state=RANDOM_SEED,
-                                ),
+                        ),
+                        (
+                            "gb",
+                            GradientBoostingClassifier(
+                                n_estimators=150,
+                                learning_rate=0.04,
+                                max_depth=3,
+                                min_samples_leaf=5,
+                                subsample=0.85,
+                                random_state=RANDOM_SEED,
                             ),
-                        ],
-                        final_estimator=LogisticRegression(max_iter=1000),
-                        cv=5,
+                        ),
+                    ],
+                    final_estimator=LogisticRegression(
+                        C=0.5,
+                        max_iter=1000,
                     ),
+                    stack_method="predict_proba",
+                    cv=5,
+                    n_jobs=-1,
                 ),
-            ]
+            ),
+        ]
+    )
+
+    return candidates
+
+
+def evaluate_model(
+    model: Pipeline,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    cv: StratifiedKFold,
+) -> dict:
+
+    cv_scores = cross_val_score(
+        model,
+        X_train,
+        y_train,
+        cv=cv,
+        scoring="roc_auc",
+        n_jobs=-1,
+    )
+
+    model.fit(X_train, y_train)
+
+    probabilities = model.predict_proba(X_test)[:, 1]
+    predictions = model.predict(X_test)
+
+    return {
+        "cv_roc_auc_mean": float(cv_scores.mean()),
+        "cv_roc_auc_std": float(cv_scores.std()),
+        "test_roc_auc": float(
+            roc_auc_score(y_test, probabilities)
+        ),
+        "accuracy": float(
+            accuracy_score(y_test, predictions)
+        ),
+        "precision": float(
+            precision_score(
+                y_test,
+                predictions,
+                zero_division=0,
+            )
+        ),
+        "recall": float(
+            recall_score(
+                y_test,
+                predictions,
+                zero_division=0,
+            )
+        ),
+        "f1": float(
+            f1_score(
+                y_test,
+                predictions,
+                zero_division=0,
+            )
         ),
     }
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
 
-    print("=== CV ROC-AUC on TRAIN & Test Metrics ===")
-    for name, pipe in candidates.items():
-        cv_scores = cross_val_score(
-            pipe, train_fe, y_train, cv=cv, scoring="roc_auc", n_jobs=-1
+def main() -> None:
+
+    df = pd.read_csv(
+        "german.csv",
+        sep=";",
+    )
+
+    target = "Creditability"
+
+    X = df.drop(columns=[target])
+    y = df[target].astype(int)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=TEST_SIZE,
+        stratify=y,
+        random_state=RANDOM_SEED,
+    )
+
+    X_train = _add_domain_features(X_train)
+    X_test = _add_domain_features(X_test)
+
+    cv = StratifiedKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=RANDOM_SEED,
+    )
+
+    candidates = build_candidates(X_train)
+
+    results = {}
+
+    print("СРАВНЕНИЕ МОДЕЛЕЙ")
+
+    for name, model in candidates.items():
+
+        metrics = evaluate_model(
+            model,
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            cv,
         )
-        pipe.fit(train_fe, y_train)
-        proba = pipe.predict_proba(test_fe)[:, 1]
-        pred = pipe.predict(test_fe)
+
+        results[name] = metrics
+
+        print(f"\n{name}")
         print(
-            f"{name}\n"
-            f"  CV ROC-AUC : {cv_scores.mean():.4f} ± {cv_scores.std():.4f}\n"
-            f"  Test ROC-AUC: {roc_auc_score(y_test, proba):.4f} | "
-            f"Acc: {accuracy_score(y_test, pred):.4f} | "
-            f"Prec: {precision_score(y_test, pred, zero_division=0):.4f} | "
-            f"Rec: {recall_score(y_test, pred, zero_division=0):.4f} | "
-            f"F1: {f1_score(y_test, pred, zero_division=0):.4f}"
+            f"CV ROC-AUC: "
+            f"{metrics['cv_roc_auc_mean']:.4f} "
+            f"+/- {metrics['cv_roc_auc_std']:.4f}"
         )
 
-    # Проверка контрактной функции
+        print(
+            f"Test ROC-AUC: "
+            f"{metrics['test_roc_auc']:.4f}"
+        )
+
+        print(
+            f"Accuracy: "
+            f"{metrics['accuracy']:.4f}"
+        )
+
+        print(
+            f"Precision: "
+            f"{metrics['precision']:.4f}"
+        )
+
+        print(
+            f"Recall: "
+            f"{metrics['recall']:.4f}"
+        )
+
+        print(
+            f"F1: "
+            f"{metrics['f1']:.4f}"
+        )
+
+    # Критерий выбора использует ТОЛЬКО train/CV.
+    selected_name = max(
+        results,
+        key=lambda name: results[name][
+            "cv_roc_auc_mean"
+        ],
+    )
+
+    print(
+        f"Лучшая модель по CV ROC-AUC: "
+        f"{selected_name}"
+    )
+
+    selected_model = candidates[selected_name]
+
+    selected_model.fit(
+        X_train,
+        y_train,
+    )
+
+    test_probabilities = (
+        selected_model.predict_proba(X_test)[:, 1]
+    )
+
+    test_predictions = (
+        selected_model.predict(X_test)
+    )
+
+    final_metrics = {
+        "roc_auc": float(
+            roc_auc_score(
+                y_test,
+                test_probabilities,
+            )
+        ),
+        "accuracy": float(
+            accuracy_score(
+                y_test,
+                test_predictions,
+            )
+        ),
+        "precision": float(
+            precision_score(
+                y_test,
+                test_predictions,
+                zero_division=0,
+            )
+        ),
+        "recall": float(
+            recall_score(
+                y_test,
+                test_predictions,
+                zero_division=0,
+            )
+        ),
+        "f1": float(
+            f1_score(
+                y_test,
+                test_predictions,
+                zero_division=0,
+            )
+        ),
+    }
+
+    # Проверяем именно контрактную функцию.
     contract_input = EnsembleInput(
         train_features=X_train,
         train_target=y_train,
@@ -263,28 +490,42 @@ def main() -> None:
         test_target=y_test,
         random_seed=RANDOM_SEED,
     )
-    res = run_ensemble_experiment(contract_input)
 
-    results_payload = {
+    contract_result = run_ensemble_experiment(
+        contract_input
+    )
+
+    payload = {
         "random_seed": RANDOM_SEED,
-        "test_size": 0.2,
+        "test_size": TEST_SIZE,
         "stratified": True,
-        "selected_model": res.model_name,
-        "selection_criterion": "roc_auc (на валидации/тесте при контроле переобучения и баланса F1)",
+        "selected_model": (
+            contract_result.model_name
+        ),
+        "selection_criterion": (
+            "maximum mean ROC-AUC on 5-fold "
+            "StratifiedKFold using train only"
+        ),
+        "cv_results": results,
         "metrics": {
-            "roc_auc": round(res.roc_auc, 6),
-            "accuracy": round(res.accuracy, 6),
-            "precision": round(res.precision, 6),
-            "recall": round(res.recall, 6),
-            "f1": round(res.f1, 6),
+            key: round(value, 6)
+            for key, value in final_metrics.items()
         },
     }
 
-    Path("experiment_results.json").write_text(
-        json.dumps(results_payload, ensure_ascii=False, indent=2),
+    Path(
+        "experiment_results.json"
+    ).write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
-    print("\nSaved experiment_results.json")
+
+    print("\nРезультаты сохранены:")
+    print("experiment_results.json")
 
 
 if __name__ == "__main__":

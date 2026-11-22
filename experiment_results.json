@@ -2,13 +2,51 @@
   "random_seed": 42,
   "test_size": 0.2,
   "stratified": true,
-  "selected_model": "HistGradientBoosting + DomainFeatures",
-  "selection_criterion": "roc_auc (на валидации/тесте при контроле переобучения и баланса F1)",
+  "selected_model": "Stacking: RandomForest + ExtraTrees + GradientBoosting -> LogisticRegression",
+  "selection_criterion": "maximum mean ROC-AUC on 5-fold StratifiedKFold using train only",
+  "cv_results": {
+    "RandomForest": {
+      "cv_roc_auc_mean": 0.7859747023809524,
+      "cv_roc_auc_std": 0.03129151508269671,
+      "test_roc_auc": 0.8325,
+      "accuracy": 0.765,
+      "precision": 0.8604651162790697,
+      "recall": 0.7928571428571428,
+      "f1": 0.8252788104089219
+    },
+    "ExtraTrees": {
+      "cv_roc_auc_mean": 0.7859747023809524,
+      "cv_roc_auc_std": 0.03556936744004644,
+      "test_roc_auc": 0.8311904761904761,
+      "accuracy": 0.77,
+      "precision": 0.8560606060606061,
+      "recall": 0.8071428571428572,
+      "f1": 0.8308823529411765
+    },
+    "GradientBoosting": {
+      "cv_roc_auc_mean": 0.7790178571428571,
+      "cv_roc_auc_std": 0.0299082617894101,
+      "test_roc_auc": 0.8467857142857143,
+      "accuracy": 0.82,
+      "precision": 0.8333333333333334,
+      "recall": 0.9285714285714286,
+      "f1": 0.8783783783783784
+    },
+    "Stacking": {
+      "cv_roc_auc_mean": 0.7913690476190476,
+      "cv_roc_auc_std": 0.02854506472150042,
+      "test_roc_auc": 0.8463095238095237,
+      "accuracy": 0.785,
+      "precision": 0.8089171974522293,
+      "recall": 0.9071428571428571,
+      "f1": 0.8552188552188552
+    }
+  },
   "metrics": {
-    "roc_auc": 0.78131,
+    "roc_auc": 0.84631,
     "accuracy": 0.785,
-    "precision": 0.821192,
-    "recall": 0.885714,
-    "f1": 0.852234
+    "precision": 0.808917,
+    "recall": 0.907143,
+    "f1": 0.855219
   }
 }
