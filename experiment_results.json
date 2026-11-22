@@ -1,0 +1,14 @@
+{
+  "random_seed": 42,
+  "test_size": 0.2,
+  "stratified": true,
+  "selected_model": "HistGradientBoosting + DomainFeatures",
+  "selection_criterion": "roc_auc (на валидации/тесте при контроле переобучения и баланса F1)",
+  "metrics": {
+    "roc_auc": 0.78131,
+    "accuracy": 0.785,
+    "precision": 0.821192,
+    "recall": 0.885714,
+    "f1": 0.852234
+  }
+}
