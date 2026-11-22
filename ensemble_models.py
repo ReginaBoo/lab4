@@ -22,7 +22,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import  OrdinalEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from grader_contracts.ensembles import EnsembleInput, EnsembleResult
 
@@ -79,6 +79,7 @@ def _add_domain_features(X: Any) -> pd.DataFrame:
         "Duration_of_Credit_monthly",
     }.issubset(df.columns):
         duration = df["Duration_of_Credit_monthly"].replace(0, np.nan)
+
         df["credit_per_month"] = (
             df["Credit_Amount"] / duration
         ).replace([np.inf, -np.inf], np.nan)
@@ -88,6 +89,7 @@ def _add_domain_features(X: Any) -> pd.DataFrame:
         "Duration_of_Credit_monthly",
     }.issubset(df.columns):
         duration = df["Duration_of_Credit_monthly"].replace(0, np.nan)
+
         df["age_to_credit_duration"] = (
             df["Age_years"] / duration
         ).replace([np.inf, -np.inf], np.nan)
@@ -97,6 +99,7 @@ def _add_domain_features(X: Any) -> pd.DataFrame:
         "Age_years",
     }.issubset(df.columns):
         age = df["Age_years"].replace(0, np.nan)
+
         df["credit_to_age"] = (
             df["Credit_Amount"] / age
         ).replace([np.inf, -np.inf], np.nan)
@@ -105,7 +108,9 @@ def _add_domain_features(X: Any) -> pd.DataFrame:
 
 
 def _build_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
-    """Создаёт предобработку для числовых и категориальных признаков."""
+    """
+    Создаёт предобработку для числовых и категориальных признаков.
+    """
 
     categorical = [
         col for col in CATEGORICAL_COLS
@@ -119,51 +124,110 @@ def _build_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
         and pd.api.types.is_numeric_dtype(df[col])
     ]
 
-    transformers = []
+    numeric_pipeline = Pipeline(
+        steps=[
+            (
+                "imputer",
+                SimpleImputer(strategy="median"),
+            ),
+            (
+                "scaler",
+                StandardScaler(),
+            ),
+        ]
+    )
 
-    if numeric:
-        numeric_pipeline = Pipeline(
-            steps=[
-                (
-                    "imputer",
-                    SimpleImputer(strategy="median"),
+    categorical_pipeline = Pipeline(
+        steps=[
+            (
+                "imputer",
+                SimpleImputer(strategy="most_frequent"),
+            ),
+            (
+                "encoder",
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    sparse_output=False,
                 ),
-            ]
-        )
-
-        transformers.append(
-            ("numeric", numeric_pipeline, numeric)
-        )
-
-    if categorical:
-        categorical_pipeline = Pipeline(
-            steps=[
-                (
-                    "imputer",
-                    SimpleImputer(strategy="most_frequent"),
-                ),
-                (
-                    "encoder",
-                    OrdinalEncoder(
-                        handle_unknown="use_encoded_value",
-                        unknown_value=-1,
-                    ),
-                ),
-            ]
-        )
-
-        transformers.append(
-            ("categorical", categorical_pipeline, categorical)
-        )
+            ),
+        ]
+    )
 
     return ColumnTransformer(
-        transformers=transformers,
+        transformers=[
+            (
+                "numeric",
+                numeric_pipeline,
+                numeric,
+            ),
+            (
+                "categorical",
+                categorical_pipeline,
+                categorical,
+            ),
+        ],
         remainder="drop",
     )
 
+
+def _build_stacking_model(seed: int) -> StackingClassifier:
+    """
+    Создаёт Stacking-модель, используемую в экспериментах.
+    """
+
+    base_models = [
+        (
+            "rf",
+            RandomForestClassifier(
+                n_estimators=250,
+                max_depth=8,
+                min_samples_leaf=4,
+                max_features="sqrt",
+                class_weight="balanced",
+                random_state=seed,
+                n_jobs=-1,
+            ),
+        ),
+        (
+            "extra_trees",
+            ExtraTreesClassifier(
+                n_estimators=250,
+                max_depth=10,
+                min_samples_leaf=3,
+                max_features="sqrt",
+                class_weight="balanced",
+                random_state=seed,
+                n_jobs=-1,
+            ),
+        ),
+        (
+            "gb",
+            GradientBoostingClassifier(
+                n_estimators=150,
+                learning_rate=0.04,
+                max_depth=3,
+                min_samples_leaf=5,
+                subsample=0.85,
+                random_state=seed,
+            ),
+        ),
+    ]
+
+    return StackingClassifier(
+        estimators=base_models,
+        final_estimator=LogisticRegression(
+            C=0.5,
+            max_iter=1000,
+        ),
+        stack_method="predict_proba",
+        cv=5,
+        n_jobs=-1,
+    )
+
+
 def run_ensemble_experiment(data: EnsembleInput) -> EnsembleResult:
     """
-    Обучает ансамбль только на train-части.
+    Обучает итоговый Stacking только на train-части.
 
     test_target используется исключительно для финальной оценки.
     """
@@ -176,57 +240,8 @@ def run_ensemble_experiment(data: EnsembleInput) -> EnsembleResult:
     y_train = np.asarray(data.train_target).ravel()
     y_test = np.asarray(data.test_target).ravel()
 
-    # Важно: preprocessing строится по train-признакам.
     preprocessor = _build_preprocessor(train_df)
-
-    base_models = [
-        (
-            "rf",
-            RandomForestClassifier(
-                n_estimators=300,
-                max_depth=8,
-                min_samples_leaf=4,
-                max_features="sqrt",
-                class_weight="balanced",
-                random_state=seed,
-                n_jobs=-1,
-            ),
-        ),
-        (
-            "extra_trees",
-            ExtraTreesClassifier(
-                n_estimators=300,
-                max_depth=10,
-                min_samples_leaf=3,
-                max_features="sqrt",
-                class_weight="balanced",
-                random_state=seed,
-                n_jobs=-1,
-            ),
-        ),
-        (
-            "gradient_boosting",
-            GradientBoostingClassifier(
-                n_estimators=150,
-                learning_rate=0.04,
-                max_depth=3,
-                min_samples_leaf=5,
-                subsample=0.85,
-                random_state=seed,
-            ),
-        ),
-    ]
-
-    model = StackingClassifier(
-        estimators=base_models,
-        final_estimator=LogisticRegression(
-            C=0.5,
-            max_iter=1000,
-        ),
-        stack_method="predict_proba",
-        cv=5,
-        n_jobs=-1,
-    )
+    model = _build_stacking_model(seed)
 
     clf = Pipeline(
         steps=[

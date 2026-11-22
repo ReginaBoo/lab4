@@ -1,4 +1,6 @@
-"""Воспроизводимое сравнение ансамблей на german.csv."""
+"""
+Воспроизводимое сравнение ансамблей на german.csv.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ from ensemble_models import (
     _add_domain_features,
     run_ensemble_experiment,
 )
+
 from grader_contracts.ensembles import EnsembleInput
 
 
@@ -48,9 +51,12 @@ RANDOM_SEED = 42
 TEST_SIZE = 0.2
 
 
-def build_tree_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
+def build_tree_preprocessor(
+    df: pd.DataFrame,
+) -> ColumnTransformer:
     categorical = [
-        col for col in CATEGORICAL_COLS
+        col
+        for col in CATEGORICAL_COLS
         if col in df.columns
     ]
 
@@ -96,9 +102,9 @@ def build_tree_preprocessor(df: pd.DataFrame) -> ColumnTransformer:
 def build_linear_preprocessor(
     df: pd.DataFrame,
 ) -> ColumnTransformer:
-
     categorical = [
-        col for col in CATEGORICAL_COLS
+        col
+        for col in CATEGORICAL_COLS
         if col in df.columns
     ]
 
@@ -158,16 +164,22 @@ def build_candidates(
     train_df: pd.DataFrame,
 ) -> dict[str, Pipeline]:
 
-    tree_preprocessor = build_tree_preprocessor(train_df)
-    linear_preprocessor = build_linear_preprocessor(train_df)
+    tree_preprocessor = build_tree_preprocessor(
+        train_df
+    )
+
+    linear_preprocessor = build_linear_preprocessor(
+        train_df
+    )
 
     candidates = {}
 
-    candidates[
-        "RandomForest"
-    ] = Pipeline(
+    candidates["RandomForest"] = Pipeline(
         steps=[
-            ("prep", tree_preprocessor),
+            (
+                "prep",
+                tree_preprocessor,
+            ),
             (
                 "model",
                 RandomForestClassifier(
@@ -183,11 +195,12 @@ def build_candidates(
         ]
     )
 
-    candidates[
-        "ExtraTrees"
-    ] = Pipeline(
+    candidates["ExtraTrees"] = Pipeline(
         steps=[
-            ("prep", tree_preprocessor),
+            (
+                "prep",
+                tree_preprocessor,
+            ),
             (
                 "model",
                 ExtraTreesClassifier(
@@ -203,11 +216,12 @@ def build_candidates(
         ]
     )
 
-    candidates[
-        "GradientBoosting"
-    ] = Pipeline(
+    candidates["GradientBoosting"] = Pipeline(
         steps=[
-            ("prep", tree_preprocessor),
+            (
+                "prep",
+                tree_preprocessor,
+            ),
             (
                 "model",
                 GradientBoostingClassifier(
@@ -222,11 +236,12 @@ def build_candidates(
         ]
     )
 
-    candidates[
-        "Stacking"
-    ] = Pipeline(
+    candidates["Stacking"] = Pipeline(
         steps=[
-            ("prep", linear_preprocessor),
+            (
+                "prep",
+                linear_preprocessor,
+            ),
             (
                 "model",
                 StackingClassifier(
@@ -302,17 +317,30 @@ def evaluate_model(
 
     model.fit(X_train, y_train)
 
-    probabilities = model.predict_proba(X_test)[:, 1]
+    probabilities = model.predict_proba(
+        X_test
+    )[:, 1]
+
     predictions = model.predict(X_test)
 
     return {
-        "cv_roc_auc_mean": float(cv_scores.mean()),
-        "cv_roc_auc_std": float(cv_scores.std()),
+        "cv_roc_auc_mean": float(
+            cv_scores.mean()
+        ),
+        "cv_roc_auc_std": float(
+            cv_scores.std()
+        ),
         "test_roc_auc": float(
-            roc_auc_score(y_test, probabilities)
+            roc_auc_score(
+                y_test,
+                probabilities,
+            )
         ),
         "accuracy": float(
-            accuracy_score(y_test, predictions)
+            accuracy_score(
+                y_test,
+                predictions,
+            )
         ),
         "precision": float(
             precision_score(
@@ -347,19 +375,29 @@ def main() -> None:
 
     target = "Creditability"
 
-    X = df.drop(columns=[target])
-    y = df[target].astype(int)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=TEST_SIZE,
-        stratify=y,
-        random_state=RANDOM_SEED,
+    X = df.drop(
+        columns=[target]
     )
 
-    X_train = _add_domain_features(X_train)
-    X_test = _add_domain_features(X_test)
+    y = df[target].astype(int)
+
+    X_train, X_test, y_train, y_test = (
+        train_test_split(
+            X,
+            y,
+            test_size=TEST_SIZE,
+            stratify=y,
+            random_state=RANDOM_SEED,
+        )
+    )
+
+    X_train = _add_domain_features(
+        X_train
+    )
+
+    X_test = _add_domain_features(
+        X_test
+    )
 
     cv = StratifiedKFold(
         n_splits=5,
@@ -367,11 +405,15 @@ def main() -> None:
         random_state=RANDOM_SEED,
     )
 
-    candidates = build_candidates(X_train)
+    candidates = build_candidates(
+        X_train
+    )
 
     results = {}
 
+    print("=" * 70)
     print("СРАВНЕНИЕ МОДЕЛЕЙ")
+    print("=" * 70)
 
     for name, model in candidates.items():
 
@@ -387,10 +429,12 @@ def main() -> None:
         results[name] = metrics
 
         print(f"\n{name}")
+
         print(
             f"CV ROC-AUC: "
             f"{metrics['cv_roc_auc_mean']:.4f} "
-            f"+/- {metrics['cv_roc_auc_std']:.4f}"
+            f"+/- "
+            f"{metrics['cv_roc_auc_std']:.4f}"
         )
 
         print(
@@ -418,20 +462,23 @@ def main() -> None:
             f"{metrics['f1']:.4f}"
         )
 
-    # Критерий выбора использует ТОЛЬКО train/CV.
+    # Выбор выполняется только по train/CV.
     selected_name = max(
         results,
-        key=lambda name: results[name][
-            "cv_roc_auc_mean"
-        ],
+        key=lambda name:
+        results[name]["cv_roc_auc_mean"],
     )
 
+    print("\n" + "=" * 70)
     print(
         f"Лучшая модель по CV ROC-AUC: "
         f"{selected_name}"
     )
+    print("=" * 70)
 
-    selected_model = candidates[selected_name]
+    selected_model = candidates[
+        selected_name
+    ]
 
     selected_model.fit(
         X_train,
@@ -439,11 +486,15 @@ def main() -> None:
     )
 
     test_probabilities = (
-        selected_model.predict_proba(X_test)[:, 1]
+        selected_model.predict_proba(
+            X_test
+        )[:, 1]
     )
 
     test_predictions = (
-        selected_model.predict(X_test)
+        selected_model.predict(
+            X_test
+        )
     )
 
     final_metrics = {
@@ -482,7 +533,7 @@ def main() -> None:
         ),
     }
 
-    # Проверяем именно контрактную функцию.
+    # Проверяем контрактную функцию.
     contract_input = EnsembleInput(
         train_features=X_train,
         train_target=y_train,
@@ -491,8 +542,10 @@ def main() -> None:
         random_seed=RANDOM_SEED,
     )
 
-    contract_result = run_ensemble_experiment(
-        contract_input
+    contract_result = (
+        run_ensemble_experiment(
+            contract_input
+        )
     )
 
     payload = {
@@ -509,7 +562,8 @@ def main() -> None:
         "cv_results": results,
         "metrics": {
             key: round(value, 6)
-            for key, value in final_metrics.items()
+            for key, value
+            in final_metrics.items()
         },
     }
 
